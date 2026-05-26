@@ -286,7 +286,7 @@ tbody tr:last-child td { border-bottom: none; }
           <table>
             <thead>
               <tr>
-                <th>序号</th><th>物料号(PN)</th><th>询价数量</th><th>库存数量</th><th>MOQ</th><th>箱数/状态</th><th>匹配状态</th><th>建议报价</th><th>操作</th>
+                <th>序号</th><th>客户名称</th><th>QQ号</th><th>询价时间</th><th>物料号(PN)</th><th>询价数量</th><th>库存数量</th><th>MOQ</th><th>箱数/状态</th><th>匹配状态</th><th>建议报价</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="inquiryResultBody"></tbody>
@@ -740,55 +740,66 @@ function parseInquiry() {
   const lines = raw.split('\n').map(l => l.trim()).filter(l => l);
   const results = [];
 
-  // 解析每一行：尝试提取物料号和数量
-  const pnPattern = /^[\w\-]+\d[\w\-]*|^\d+[\w\-]+/;
+  // 当前客户上下文
+  let curCustName = '', curQQ = '', curTime = '';
+
+  // 客户头部行正则：【实习】Siber-Danny&TE(3948096823) 2025/11/24 9:28:04
+  const custHeaderRe = /^【[^】]*】\s*(.+?)\s*\((\d+)\)\s*(.+)$/;
+
   lines.forEach(line => {
-    if (/^【|^\/\/|^#|求购|实单|现货|期货/.test(line) && !/\d/.test(line.replace(/求购|实单|现货|期货/,''))) return;
-    // 尝试提取物料号（常见格式如 7116-1471, 1-1411001-1, MG633713-5）
-    const pnMatch = line.match(/(?:PN[:\s]?)?([A-Za-z0-9\-]{4,}(?:-[A-Za-z0-9\-]+)+)/);
+    // 检查是否是客户头部行
+    const headerMatch = line.match(custHeaderRe);
+    if (headerMatch) {
+      curCustName = headerMatch[1].trim();
+      curQQ = headerMatch[2].trim();
+      curTime = headerMatch[3].trim();
+      return; // 客户头部行，不是物料行
+    }
+
+    // 提取物料号（常见格式如 7116-1471, 1-1411001-1, MG633713-5, 926887-1）
+    const pnMatch = line.match(/^([A-Za-z0-9][-A-Za-z0-9]{4,}(?:-[\w]+)+)/);
     let pn = '', qty = 0;
     if (pnMatch) {
       pn = pnMatch[1].trim();
     }
-    // 提取数量：中文/英文数字
-    const qtyMatch = line.match(/[\s:：](\d[\d,]*\.?\d*)\s*(PCS|pcs|个|只|卷|箱|盘|K|k)?/i);
+    if (!pn) return;
+
+    // 提取数量
+    const qtyMatch = line.match(/[\s:：](\d[\d,]*\.?\d*)\s*(PCS|pcs|个|只|卷|箱|盘|实单|求购|现货)/i);
     if (qtyMatch) {
       let q = qtyMatch[1].replace(/,/g, '');
       qty = parseFloat(q) || 0;
-      if (line.match(/(\d+)\s*K/i)) { const k = line.match(/(\d+)\s*K/i); qty = parseInt(k[1]) * 1000; }
-    } else {
-      const cnMatch = line.match(/(?:求|购|货|单)[^\d]*(\d[\d,]*)/);
-      if (cnMatch) qty = parseInt(cnMatch[1].replace(/,/g,'')) || 0;
     }
+    // K数量格式：48K
+    const kMatch = line.match(/(\d+)\s*K\b/i);
+    if (kMatch) qty = parseInt(kMatch[1]) * 1000;
 
-    if (pn) {
-      const inv = invMap[pn];
-      let status = '未找到', statusClass = 'nomatch-row';
-      let stockQty = '-', moq = '-', box = '-', suggest = '-';
-      if (inv) {
-        stockQty = inv.qty;
-        moq = inv.moq;
-        box = inv.box || '-';
-        if (inv.qty >= qty && qty > 0) {
-          status = '✅ 库存充足';
-          statusClass = 'match-row';
-          suggest = '可接单，报价 ' + (inv.qty >= qty * 1.2 ? '有优势' : '正常');
-        } else if (inv.qty > 0 && inv.qty < qty) {
-          status = '⚠️ 部分有货（' + inv.qty + '）';
-          statusClass = 'warn-row';
-          suggest = '可部分交付，建议确认交期';
-        } else if (inv.qty <= 0) {
-          status = '❌ 缺货';
-          statusClass = 'nomatch-row';
-          suggest = '需调货/期货，交期确认';
-        } else if (qty === 0) {
-          status = '✅ 有库存';
-          statusClass = 'match-row';
-          suggest = '请确认询价数量';
-        }
+    const inv = invMap[pn];
+    let status = '未找到', statusClass = 'nomatch-row';
+    let stockQty = '-', moq = '-', box = '-', suggest = '-';
+    if (inv) {
+      stockQty = inv.qty;
+      moq = inv.moq;
+      box = inv.box || '-';
+      if (inv.qty >= qty && qty > 0) {
+        status = '✅ 库存充足';
+        statusClass = 'match-row';
+        suggest = '可接单，报价 ' + (inv.qty >= qty * 1.2 ? '有优势' : '正常');
+      } else if (inv.qty > 0 && inv.qty < qty) {
+        status = '⚠️ 部分有货（' + inv.qty + '）';
+        statusClass = 'warn-row';
+        suggest = '可部分交付，建议确认交期';
+      } else if (inv.qty <= 0) {
+        status = '❌ 缺货';
+        statusClass = 'nomatch-row';
+        suggest = '需调货/期货，交期确认';
+      } else if (qty === 0) {
+        status = '✅ 有库存';
+        statusClass = 'match-row';
+        suggest = '请确认询价数量';
       }
-      results.push({ pn, qty, stockQty, moq, box, status, statusClass, suggest, line });
     }
+    results.push({ pn, qty, stockQty, moq, box, status, statusClass, suggest, line, custName: curCustName, qq: curQQ, time: curTime });
   });
 
   if (results.length === 0) {
@@ -802,6 +813,9 @@ function parseInquiry() {
   const tbody = document.getElementById('inquiryResultBody');
   tbody.innerHTML = results.map((r, i) => '<tr class="' + r.statusClass + '">' +
     '<td>' + (i+1) + '</td>' +
+    '<td>' + (r.custName || '-') + '</td>' +
+    '<td>' + (r.qq || '-') + '</td>' +
+    '<td>' + (r.time || '-') + '</td>' +
     '<td><b>' + r.pn + '</b></td>' +
     '<td>' + (r.qty > 0 ? formatNum(r.qty) : '-') + '</td>' +
     '<td>' + (r.stockQty !== '-' ? formatNum(r.stockQty) : '-') + '</td>' +
@@ -814,7 +828,17 @@ function parseInquiry() {
 }
 
 function loadDemoInquiry() {
-  const demo = `【实习】山东妙盈电子(2881343374) 2025/11/24 9:27:54
+  const demo = `【实习】Siber-Danny&TE(3948096823) 2025/11/24 9:28:04
+926887-1
+2-1393223-1
+2389205-2
+1-1801263-1
+867052-2
+2040114-1
+776493-2
+2-1718324-1  求购
+
+【实习】山东妙盈电子(2881343374) 2025/11/24 9:27:54
 7116-1471  	15000实单
 7116-1472 	   1870实单
 DTCE04-1-4P-E003	2145
@@ -833,15 +857,7 @@ DTCE04-1-4P-E003	2145
 【经理】南京智创电气   王先生(415609083) 2025/11/24 9:44:33
 1-968855-1   48K  实单
 1-968857-1   16K  实单
-现货求购
-
-【实习】深圳墨壹15999510225(543087818) 2025/11/24 9:42:18
-1534404-1    360
-1534170-1    360
-1355881-1    4000
-965413-1      4000
-5031491000   6000
-1-962842-1    3500    求购现货`;
+现货求购`;
   document.getElementById('inquiryInput').value = demo;
   showToast('已加载示例询价内容');
 }
@@ -859,14 +875,31 @@ function singleQuote(pn) {
   if (!inv) { showToast('未找到库存信息', 'error'); return; }
   const price = prod ? prod.price : (Math.random() * 5 + 1).toFixed(2);
   const total = (price * inv.qty).toFixed(2);
+  
+  // 尝试获取当前客户上下文
+  let custName = '（请填写客户名称）', custQQ = '', custTime = '';
+  const tbody = document.getElementById('inquiryResultBody');
+  if (tbody) {
+    for (let tr of tbody.children) {
+      const tds = tr.children;
+      if (tds[4] && tds[4].textContent.trim() === pn) {
+        custName = tds[1].textContent.trim() || custName;
+        custQQ = tds[2].textContent.trim() || custQQ;
+        custTime = tds[3].textContent.trim() || custTime;
+        break;
+      }
+    }
+  }
+  
   const html = `<div style="font-family:'Microsoft YaHei',sans-serif;padding:20px;">
     <div style="text-align:center;border-bottom:2px solid #1a73e8;padding-bottom:12px;margin-bottom:20px;">
       <h2 style="color:#1a73e8;margin:0;">报价单 QUOTATION</h2>
       <p style="color:#666;margin:4px 0 0;">报价日期：${new Date().toLocaleDateString('zh-CN')} &nbsp;|&nbsp; 单号：QTE-${Date.now().toString().slice(-6)}</p>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:14px;">
-      <tr><td style="padding:6px 0;width:80px;color:#666;">客户</td><td>：（请填写客户名称）</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">联系人</td><td>：（请填写联系人）</td></tr>
+      <tr><td style="padding:6px 0;width:80px;color:#666;">客户名称</td><td>${custName}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">QQ/联系方式</td><td>${custQQ || '（请填写联系方式）'}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">询价时间</td><td>${custTime || '（请填写询价时间）'}</td></tr>
     </table>
     <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:14px;border:1px solid #dadce0;">
       <thead><tr style="background:#1a73e8;color:#fff;"><th style="padding:10px;text-align:left;">物料号</th><th style="padding:10px;text-align:left;">商品名称</th><th style="padding:10px;text-align:right;">数量(PCS)</th><th style="padding:10px;text-align:right;">单价(¥)</th><th style="padding:10px;text-align:right;">总金额(¥)</th><th style="padding:10px;text-align:left;">库存状态</th></tr></thead>
@@ -904,17 +937,19 @@ function batchQuote() {
   const d = getData();
   let rows = '';
   let grandTotal = 0;
+  let custName = '', custQQ = '', custTime = '';
   for (let tr of tbody.children) {
     const tds = tr.children;
-    const pn = tds[1].textContent.trim();
-    const qtyStr = tds[2].textContent.trim();
-    const stockStr = tds[3].textContent.trim();
+    const pn = tds[4].textContent.trim();
+    const qtyStr = tds[5].textContent.trim();
+    const stockStr = tds[6].textContent.trim();
     const inv = d.inventory.find(i => i.pn === pn);
     const prod = d.products.find(p => p.pn === pn);
     const price = prod ? prod.price : (Math.random() * 5 + 1).toFixed(2);
     const qty = parseInt(stockStr.replace(/,/g,'')) || 0;
     const subtotal = (price * (qty || 1)).toFixed(2);
     grandTotal += parseFloat(subtotal);
+    if (!custName) { custName = tds[1].textContent.trim(); custQQ = tds[2].textContent.trim(); custTime = tds[3].textContent.trim(); }
     rows += '<tr style="border-bottom:1px solid #f0f0f0;">' +
       '<td style="padding:10px;">' + pn + '</td>' +
       '<td style="padding:10px;">' + (inv ? inv.name : pn) + '</td>' +
@@ -930,8 +965,9 @@ function batchQuote() {
       <p style="color:#666;margin:4px 0 0;">报价日期：${new Date().toLocaleDateString('zh-CN')} &nbsp;|&nbsp; 单号：QTE-${Date.now().toString().slice(-6)}</p>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:14px;">
-      <tr><td style="padding:6px 0;width:80px;color:#666;">客户</td><td>：（请填写客户名称）</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">联系人</td><td>：（请填写联系人）</td></tr>
+      <tr><td style="padding:6px 0;width:80px;color:#666;">客户名称</td><td>${custName || '（请填写客户名称）'}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">QQ/联系方式</td><td>${custQQ || '（请填写联系方式）'}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">询价时间</td><td>${custTime || '（请填写询价时间）'}</td></tr>
     </table>
     <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:14px;border:1px solid #dadce0;">
       <thead><tr style="background:#1a73e8;color:#fff;"><th style="padding:10px;text-align:left;">物料号</th><th style="padding:10px;text-align:left;">商品名称</th><th style="padding:10px;text-align:right;">数量(PCS)</th><th style="padding:10px;text-align:right;">单价(¥)</th><th style="padding:10px;text-align:right;">总金额(¥)</th><th style="padding:10px;text-align:left;">库存状态</th></tr></thead>
